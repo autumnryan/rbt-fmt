@@ -24,7 +24,12 @@ class FormatCommit(Command):
                        dest='force',
                        action='store_true',
                        default=False,
-                       help='Ignore lack of shipits'),
+                       help="Ignore lack of shipits, don't validate status"),
+                Option('-c', '--commit',
+                       dest='commit',
+                       action='store_true',
+                       default=False,
+                       help='Commit! (svn only)'),
                 ]
             ),
         Command.server_options,
@@ -32,22 +37,53 @@ class FormatCommit(Command):
         ]
     
     def prettify_msg(self, msg):
+        """Wrap the input"""
         return '\n'.join(textwrap.wrap(msg, 79))
 
-    def main(self, *args):
-        """Print the commit message to terminal."""
-        if self.options.rid is None:
-            raise CommandError('No review id!')
+    def find_rb_modified_files(self, api_root):
+        review_req = api_root.get_review_request(
+            review_request_id=self.options.rid)
+        diff = review_req.get_diffs()[-1]
+        files = [x._fields['dest_file'].replace(diff._fields['basedir'],'').lstrip('/')
+                 for x in diff.get_files()]
 
-        if self.options.server:
-            server_url = self.options.server
-        else:
-            repository_info, tool = self.initialize_scm_tool(
-                client_name=self.options.repository_type)
-            server_url = self.get_server_url(repository_info, tool)
-            
-        api_client, api_root = self.get_api(server_url)
+        return files
 
+    def find_svn_modified_files(self, pysvn, svn_client):
+        changes = svn_client.status('.', get_all=False)
+        files = [f.path for f in changes
+                 if f.text_status not in [pysvn.wc_status_kind.unversioned,
+                                          pysvn.wc_status_kind.ignored]]
+        return files
+                                          
+
+    def commit_svn(self, api_root, msg):
+        """Do the actual commit"""
+        # XXX verify that it's actually svn
+        try:
+            import pysvn
+        except ImportError:
+            raise CommandError("pysvn python module not found!")
+
+        rb_files = self.find_rb_modified_files(api_root)
+        svn_client = pysvn.Client()
+
+        if not self.options.force:
+            svn_files = self.find_svn_modified_files(pysvn, svn_client)
+            # There's probably a slicker way to do this
+            for f in rb_files:
+                if f not in svn_files:
+                    raise CommandError("Woah! File %s not found in local "
+                                       "svn status" % f)
+
+        # XXXDEBUG
+        #print("\n\n-----\nReady to commit files:\n%s" % rb_files)
+
+        svn_client.checkin(rb_files, msg)
+
+        print("Committed!")
+
+    def generate_commit_msg(self, api_root):
         review_req = api_root.get_review_request(
             review_request_id=self.options.rid)
         reviews = review_req.get_reviews()
@@ -64,15 +100,56 @@ class FormatCommit(Command):
         else:
             shippers = list(set(shippers))  # dedupe reviewers
 
+        import pdb; pdb.set_trace()
+
         msg = ("%s\n\n%s\n\nCR: %s\n%s%s" %
                (self.prettify_msg(review_req._fields['summary']),
                 self.prettify_msg(review_req._fields['description']),
                 self.prettify_msg(', '.join(shippers)),
-                server_url, review_req._fields['url']) ) # XXX is there an abs url?
+                self.server_url.rstrip('/'),
+                review_req._fields['url']) ) # XXX is there an abs url?
 
-        # XXX do the actual commit here, and set review as submitted?
+        return msg
+
+    def mark_review_submitted(self, api_root):
+        review_req = api_root.get_review_request(
+            review_request_id=self.options.rid)
+
+        update_fields = { 'status' : 'submitted' }
+
+        try:
+            review_req.update(**update_fields)
+        except APIError as e:
+            raise CommandError("Failed to update draft")
+
+        return
+
+    def main(self, *args):
+        """Print the commit message to terminal."""
+        if self.options.rid is None:
+            raise CommandError('No review id!')
+
+        if self.options.server and self.options.commit:
+            # This is the easy way out
+            raise CommandError("--server and --commit are mutually exclusive")
+
+        if self.options.server:
+            self.server_url = self.options.server
+        else:
+            repository_info, tool = self.initialize_scm_tool(
+                client_name=self.options.repository_type)
+            self.server_url = self.get_server_url(repository_info, tool)
+            
+        api_client, api_root = self.get_api(self.server_url)
+
+        msg = self.generate_commit_msg(api_root)
 
         print(msg)
+
+        if self.options.commit:
+            # Maybe confirm here?
+            self.commit_svn(api_root, msg)
+            self.mark_review_submitted(api_root)
 
 if __name__ == "__main__":
     import sys
