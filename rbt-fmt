@@ -1,0 +1,79 @@
+#!/usr/bin/env python
+from __future__ import print_function
+
+from rbtools.commands import Command, CommandError, Option, OptionGroup
+import textwrap
+
+class FormatCommit(Command):
+    """Formats a commit message for a given review"""
+    name = "fmt"
+    author = "John Ryan"
+    args = "[review request id]"
+    option_list = [
+        OptionGroup(
+            name='Format Commit Options',
+            description='blah',
+            option_list=[
+                Option('-r', '--review-request-id',
+                       dest='rid',
+                       metavar='ID',
+                       default=None,
+                       help='Specifies the existing review request ID to '
+                       'format into a commit message.'),
+                Option('-f', '--force',
+                       dest='force',
+                       action='store_true',
+                       default=False,
+                       help='Ignore lack of shipits'),
+                ]
+            ),
+        Command.server_options,
+        Command.repository_options,
+        ]
+    
+    def prettify_msg(self, msg):
+        return '\n'.join(textwrap.wrap(msg, 79))
+
+    def main(self, *args):
+        """Print the commit message to terminal."""
+        if self.options.rid is None:
+            raise CommandError('No review id!')
+
+        if self.options.server:
+            server_url = self.options.server
+        else:
+            repository_info, tool = self.initialize_scm_tool(
+                client_name=self.options.repository_type)
+            server_url = self.get_server_url(repository_info, tool)
+            
+        api_client, api_root = self.get_api(server_url)
+
+        review_req = api_root.get_review_request(
+            review_request_id=self.options.rid)
+        reviews = review_req.get_reviews()
+
+        shippers = [x.get_user()._fields['username'] for x in reviews
+                    if x._fields['ship_it']]
+
+        if not shippers:
+            if not self.options.force:
+                raise CommandError("Woah! No shipits! "
+                                   "Force with -f if you really want.")
+            else:
+                shippers = ['gcc']
+        else:
+            shippers = list(set(shippers))  # dedupe reviewers
+
+        msg = ("%s\n\n%s\n\nCR: %s\n%s%s" %
+               (self.prettify_msg(review_req._fields['summary']),
+                self.prettify_msg(review_req._fields['description']),
+                self.prettify_msg(', '.join(shippers)),
+                server_url, review_req._fields['url']) ) # XXX is there an abs url?
+
+        # XXX do the actual commit here, and set review as submitted?
+
+        print(msg)
+
+if __name__ == "__main__":
+    import sys
+    FormatCommit().run_from_argv(['rbt', 'fmt'] + sys.argv[1:])
