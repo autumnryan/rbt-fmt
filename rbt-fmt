@@ -100,8 +100,6 @@ class FormatCommit(Command):
         else:
             shippers = list(set(shippers))  # dedupe reviewers
 
-        import pdb; pdb.set_trace()
-
         msg = ("%s\n\n%s\n\nCR: %s\n%s%s" %
                (self.prettify_msg(review_req._fields['summary']),
                 self.prettify_msg(review_req._fields['description']),
