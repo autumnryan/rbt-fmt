@@ -38,7 +38,12 @@ class FormatCommit(Command):
     
     def prettify_msg(self, msg):
         """Wrap the input"""
-        return '\n'.join(textwrap.wrap(msg, 79))
+        lines = msg.split('\n')
+        wrapped_lines = [textwrap.wrap(line, 79) for line in lines]
+        cleaned_wrapped_lines = ['\n'.join(wrapped_line)
+                                 for wrapped_line in wrapped_lines]
+
+        return '\n'.join(cleaned_wrapped_lines)
 
     def find_rb_modified_files(self, api_root):
         review_req = api_root.get_review_request(
